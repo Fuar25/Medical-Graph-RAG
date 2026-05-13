@@ -1,70 +1,185 @@
 # Medical-Graph-RAG
-We build a Graph RAG System specifically for the medical domain.
 
-Check our paper here: https://arxiv.org/abs/2408.04187
+Three-layer medical knowledge graph pipeline built on Neo4j. Extracts entities, relationships, and descriptions from medical documents via LLM, stores them as a structured graph, and links across layers using embedding-based similarity.
 
-## Demo
-a docker demo is here: https://hub.docker.com/repository/docker/jundewu/medrag-post/general
- 
-Use it by: docker run -it --rm --storage-opt size=10G -p 7860:7860 \ -e OPENAI_API_KEY= your_key -e NCBI_API_KEY= your_key medrag-post
+## Package Structure
 
-this demo used web-based searches on PubMed instead of locally storing medical papers and textbooks to detour the license wall.
+```
+Medical-Graph-RAG/
+├── main.py                          # CLI entry point
+└── medgraphrag/                     # Core package
+    ├── pipeline/
+    │   └── three_layer.py           # ThreeLayerImporter orchestration class
+    ├── ingestion/
+    │   ├── loader.py                # PDF / plain-text loader
+    │   └── chunking/
+    │       ├── basic.py             # Fixed-size text splitting
+    │       ├── proposition.py       # LangChain proposition-level chunking
+    │       └── agentic.py          # AgenticChunker (LLM-guided grouping)
+    ├── extraction/
+    │   └── entity_extractor.py      # LLM entity/relation extraction → Neo4j
+    ├── graph/
+    │   ├── store.py                 # Lightweight Neo4j driver wrapper
+    │   └── operations.py           # merge_similar_nodes, ref_link, add_sum, str_uuid
+    ├── embedding/
+    │   └── local.py                 # Qwen3-Embedding-8B (local, 1024-dim)
+    ├── llm/
+    │   ├── config.py                # GLM / OpenAI-compatible model config
+    │   ├── client.py                # Async OpenAI client with retry
+    │   └── summarizer.py            # Medical text summarization
+    └── qa.py                        # Python Graph RAG QA API
+```
 
-## Quick Start (Baseline: a simple Graph RAG pipeline on medical data)
-1. conda env create -f medgraphrag.yml
+For a full design overview see [medgraphrag/DESIGN.md](medgraphrag/DESIGN.md).
 
-2. export OPENAI_API_KEY = your OPENAI_API_KEY
+## Setup
 
-3. python run.py -simple True (now using ./dataset_ex/report_0.txt as RAG doc, "What is the main symptom of the patient?" as the prompt, change the prompt in run.py as you like.)
+```bash
+conda env create -f medgraphrag.yml
+conda activate medgraphrag
+```
 
-## Build from scratch (Complete Graph RAG flow in the paper)
+### Neo4j
 
-### About the dataset
-#### Paper Datasets
-**Top-level Private data (user-provided)**: we used [MIMIC IV dataset](https://physionet.org/content/mimiciv/3.0/) as the private data.
+**Option A — Local Docker (recommended, includes GDS + APOC):**
 
-**Medium-level Books and Papers**: We used MedC-K as the medium-level data. The dataset sources from [S2ORC](https://github.com/allenai/s2orc). Only those papers with PubMed IDs are deemed as medical-related and used during pretraining. The book is listed in this repo as [MedicalBook.xlsx](https://github.com/MedicineToken/Medical-Graph-RAG/blob/main/MedicalBook.xlsx), due to licenses, we cannot release raw content. For reproducing, pls buy and process the books.
+```bash
+docker compose up -d
+```
 
-**Bottom-level Dictionary data**: We used [Unified Medical Language System (UMLS)](https://www.nlm.nih.gov/research/umls/index.html) as the bottom level data. To access it, you'll need to create an account and apply for usage. It is free and approval is typically fast.
+Then open `http://localhost:7474` in a browser to inspect the graph.
 
-In the code, we use the 'trinity' argument to enable the hierarchy graph linking function. If set to True, you must also provide a 'gid' (graph ID) to specify which graphs the top-level should link to. UMLS is largely structured as a graph, so minimal effort is required to construct it. However, MedC-K must be constructed as graph data. There are several methods you can use, such as the approach we used to process the top-level in this repo (open-source LLMs are recommended to keep costs down), or you can opt for non-learning-based graph construction algorithms (faster, cheaper, and generally noisier)
+**Option B — Neo4j Aura cloud:** create a free instance at [console.neo4j.io](https://console.neo4j.io) and copy the connection URI.
 
-#### Example Datasets
-Recognizing that accessing and processing all the data mentioned may be challenging, we are working to provide simpler example dataset to demonstrate functionality. Currently, we are using the mimic_ex [here](https://huggingface.co/datasets/Morson/mimic_ex) here as the Top-level data, which is the processed smaller dataset derived from MIMIC. For Medium-level and Bottom-level data, we are in the process of identifying suitable alternatives to simplify the implementation, welcome for any recommendations.
+### Environment
 
-### 1. Prepare the environment, Neo4j and LLM
-1. conda env create -f medgraphrag.yml
+Copy and edit the env file:
 
+```bash
+cp .env.example .env   # or edit .env directly
+```
 
-2. prepare neo4j and LLM (using ChatGPT here for an example), you need to export:
+```env
+# LLM — GPT proxy (highest priority when GPT_API_KEY is set)
+GPT_API_KEY=your-gpt-api-key
+GPT_API_BASE_URL=https://your-proxy.trycloudflare.com/v1   # must end with /v1
+GPT_CHAT_MODEL=gpt-5.5
 
-export OPENAI_API_KEY = your OPENAI_API_KEY
+# LLM — GLM fallback (used when GPT_API_KEY is absent)
+GLM_API_KEY=your-glm-api-key
+GLM_API_BASE_URL=https://open.bigmodel.cn/api/paas/v4
+GLM_CHAT_MODEL=glm-5.1
 
-export NEO4J_URL= your NEO4J_URL
+# Neo4j — local Docker
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USERNAME=neo4j
+NEO4J_PASSWORD=your-password
+NEO4J_LOCAL_PASSWORD=your-password   # used by docker-compose.yml
 
-export NEO4J_USERNAME= your NEO4J_USERNAME
+# Neo4j — Aura cloud (comment out local lines above)
+# NEO4J_URI=neo4j+s://xxxx.databases.neo4j.io
+# NEO4J_USERNAME=xxxx
+# NEO4J_PASSWORD=xxxx
+```
 
-export NEO4J_PASSWORD= your NEO4J_PASSWORD
+LLM backend priority: **GPT** (`GPT_API_KEY`) → **GLM** (`GLM_API_KEY`) → **OpenAI** (`OPENAI_API_KEY`).
 
-### 2. Construct the graph (use "mimic_ex" dataset as an example)
-1. Download mimic_ex [here](https://huggingface.co/datasets/Morson/mimic_ex), put that under your data path, like ./dataset/mimic_ex
+> **Note:** `GPT_API_BASE_URL` must include the `/v1` path suffix so the OpenAI SDK routes requests correctly.
 
-2. python run.py -dataset mimic_ex -data_path ./dataset/mimic_ex(where you put the dataset) -grained_chunk -ingraphmerge -construct_graph
+OpenAI fallback variables `OPENAI_API_KEY`, `OPENAI_API_BASE_URL`, `OPENAI_CHAT_MODEL` are also supported.
 
-### 3. Model Inference
-1. put your prompt to ./prompt.txt
+### Embedding Model
 
-2. python run.py -dataset mimic_ex -data_path ./dataset/mimic_ex(where you put the dataset) -inference
+The pipeline uses **Qwen3-Embedding-8B** locally (1024-dim, no API cost). Download once:
 
-## Acknowledgement
-We are building on [CAMEL](https://github.com/camel-ai/camel), an awesome framework for construcing multi-agent pipeline.
+```bash
+env -u http_proxy -u https_proxy \
+  HF_ENDPOINT=https://hf-mirror.com \
+  hf download Qwen/Qwen3-Embedding-8B \
+  --local-dir ~/.cache/huggingface/hub/Qwen3-Embedding-8B
+```
+
+## Data Layout
+
+```
+data/
+  bottom/   # medical dictionaries, terminology
+  middle/   # guidelines, textbooks, drug labels
+  top/      # patient reports, case records
+```
+
+Supported formats: `.txt`, `.pdf` (searchable).
+
+## Run
+
+**Single layer:**
+
+```bash
+python main.py --top ./data/top --clear
+```
+
+**Full three-layer import:**
+
+```bash
+python main.py \
+  --bottom ./data/bottom \
+  --middle ./data/middle \
+  --top    ./data/top \
+  --clear --trinity
+```
+
+**All flags:**
+
+| Flag | Description |
+|------|-------------|
+| `--bottom/--middle/--top` | Data path per layer |
+| `--clear` | Wipe the database before import |
+| `--trinity` | Create cross-layer REFERENCE edges (needs GDS + APOC) |
+| `--ingraphmerge` | Merge similar nodes within each subgraph (needs GDS + APOC) |
+| `--grained_chunk` | Use LangChain proposition chunking instead of fixed-size |
+| `--skip_summary` | Skip Summary node generation |
+
+> `--trinity` and `--ingraphmerge` require the GDS and APOC plugins. These are included automatically when using the Docker Compose setup.
+
+## Python QA API
+
+After importing data into Neo4j, use `GraphQA` for one-shot question answering over the graph. It embeds the question, retrieves similar non-`Summary` nodes, expands one-hop graph evidence, and asks the configured LLM to answer only from that evidence.
+
+```python
+from medgraphrag.graph import Neo4jGraph
+from medgraphrag.qa import GraphQA
+
+graph = Neo4jGraph(
+    url="bolt://localhost:7687",
+    username="neo4j",
+    password="your-password",
+)
+
+qa = GraphQA(graph)
+result = qa.answer("二甲双胍在严重肾功能损害患者中是否禁用？为什么？")
+
+print(result.answer)
+for item in result.evidence:
+    print(item.node_id, item.labels, item.score)
+```
+
+Optional arguments:
+
+| Argument | Description |
+|----------|-------------|
+| `gids` | Limit retrieval to specific document subgraph IDs. Defaults to all graph nodes. |
+| `top_k` | Number of embedding-similar seed nodes to retrieve. Defaults to `8`. |
+| `neighbor_limit` | Maximum one-hop relationship rows added as evidence. Defaults to `30`. |
+
+The QA API uses `gds.similarity.cosine`, so Neo4j GDS must be available.
 
 ## Cite
-~~~
+
+```bibtex
 @article{wu2024medical,
   title={Medical Graph RAG: Towards Safe Medical Large Language Model via Graph Retrieval-Augmented Generation},
   author={Wu, Junde and Zhu, Jiayuan and Qi, Yunli},
   journal={arXiv preprint arXiv:2408.04187},
   year={2024}
 }
-~~~
+```

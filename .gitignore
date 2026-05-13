@@ -1,14 +1,25 @@
 *.txt
+.env
+.env.*
+!.env.example
+data/
+logs/
+.vscode/
 dataset
 dataset_paper
 dataset_test
 test*
+!tests/
+!tests/**
 .dockerignore
 app.sh
 
 ### Python template
 # Byte-compiled / optimized / DLL files
 __pycache__
+__pycache__/
+*.py[cod]
+.pytest_cache/
 
 # Jupyter Notebook
 .ipynb_checkpoints
